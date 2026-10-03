@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Block Platform</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --ink: #12202b; --panel: rgba(18, 32, 43, 0.72); --accent: #ffd166; --muted: #b9c8d3; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #8ecae6;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #fff; }
+  canvas { display: block; }
+  button, input { font: inherit; }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* --- Screens --- */
+  .screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(10, 20, 30, 0.55); }
+  .screen.hidden, #hud, body.ingame #menu { display: none; }
+  body.ingame #hud { display: block; }
+  .card { width: 340px; max-width: calc(100vw - 32px); padding: 28px 32px; border-radius: 14px;
+    background: var(--ink); box-shadow: 0 10px 40px rgba(0,0,0,.4); }
+  .card h1 { margin: 0 0 4px; font-size: 26px; }
+  .card p { margin: 0 0 16px; color: var(--muted); }
+  .card label { display: block; margin-bottom: 4px; font-size: 13px; color: var(--muted); }
+  .card input { width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 8px; border: 2px solid #2a3d4c;
+    background: #0c1820; color: #fff; }
+  .btn { display: block; width: 100%; padding: 12px; border: 0; border-radius: 8px; cursor: pointer;
+    font-weight: 700; text-align: center; background: #26394a; color: #fff; }
+  .btn:hover { background: #30495f; }
+  .btn.primary { background: var(--accent); color: var(--ink); }
+  .btn.primary:hover { background: #ffdf8f; }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .gap { height: 14px; }
+  .row { display: flex; gap: 8px; }
+  .row input { text-transform: uppercase; letter-spacing: 4px; text-align: center; font-weight: 700; }
+  .row .btn { width: auto; padding: 10px 18px; }
+  .or { margin: 16px 0 8px; font-size: 13px; color: var(--muted); text-align: center; }
+  #menuMsg { min-height: 18px; margin-top: 12px; font-size: 13px; color: var(--muted); }
+  #menuMsg.err { color: #ff8a80; }
+
+  /* --- Pause screen --- */
+  #overlay { cursor: pointer; }
+  #card dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 0 0 18px; }
+  #card dt { color: var(--accent); font-weight: 600; }
+  #card dd { margin: 0; }
+  #share { margin-bottom: 14px; padding: 12px; border-radius: 8px; background: #0c1820; text-align: center; }
+  #share small { color: var(--muted); }
+  #shareCode { margin: 2px 0 8px; font-size: 30px; font-weight: 800; letter-spacing: 6px; color: var(--accent); }
+  #share .row .btn { flex: 1; padding: 8px; font-size: 13px; }
+  #leave { margin-top: 8px; }
+
+  /* --- HUD --- */
+  #crosshair { position: fixed; left: 50%; top: 50%; width: 20px; height: 20px;
+    transform: translate(-50%, -50%); pointer-events: none; }
+  #crosshair::before, #crosshair::after { content: ""; position: absolute; background: #fff; mix-blend-mode: difference; }
+  #crosshair::before { left: 9px; top: 0; width: 2px; height: 20px; }
+  #crosshair::after { top: 9px; left: 0; height: 2px; width: 20px; }
+
+  #info { position: fixed; top: 12px; left: 12px; min-width: 150px; padding: 8px 12px; border-radius: 8px;
+    background: var(--panel); font-size: 14px; pointer-events: none; }
+  #info .code { margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,.18); }
+  #info .code b { color: var(--accent); letter-spacing: 2px; }
+  #plist div { display: flex; align-items: center; gap: 8px; padding: 1px 0; }
+  #plist i { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+
+  #hotbar { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 6px; padding: 6px; border-radius: 12px; background: var(--panel); pointer-events: none; }
+  .slot { width: 44px; height: 44px; border-radius: 6px; border: 3px solid transparent; box-sizing: border-box; position: relative; }
+  .slot.on { border-color: #fff; transform: translateY(-4px); }
+  .slot span { position: absolute; left: 4px; top: 1px; font-size: 11px; font-weight: 700; color: #fff; text-shadow: 0 1px 2px #000; }
+
+  /* --- Chat --- */
+  #chat { position: fixed; left: 12px; bottom: 16px; width: min(380px, calc(100vw - 24px)); pointer-events: none; }
+  #log { display: flex; flex-direction: column; gap: 2px; margin-bottom: 6px; }
+  .msg { padding: 3px 8px; border-radius: 6px; background: var(--panel); font-size: 14px; line-height: 1.35;
+    word-break: break-word; transition: opacity .6s; }
+  .msg b { margin-right: 6px; }
+  .msg.sys { color: var(--muted); font-style: italic; }
+  .msg.old { opacity: 0; }
+  #chat.open { pointer-events: auto; }
+  #chat.open .msg.old { opacity: 1; }
+  #chatInput { display: none; width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 8px;
+    border: 2px solid var(--accent); background: rgba(12, 24, 32, .92); color: #fff; }
+  #chat.open #chatInput { display: block; }
+</style>
+</head>
+<body>
+
+<!-- Main menu -->
+<div id="menu" class="screen">
+  <div class="card">
+    <h1>Block Platform</h1>
+    <p>Build together on one shared platform.</p>
+    <label for="name">Your name</label>
+    <input id="name" maxlength="16" placeholder="Enter a name" autocomplete="off">
+    <div class="gap"></div>
+    <button id="host" class="btn primary">Open world</button>
+    <div class="or">or join a friend's world</div>
+    <div class="row">
+      <input id="code" maxlength="5" placeholder="CODE" autocomplete="off" aria-label="World code">
+      <button id="join" class="btn">Join</button>
+    </div>
+    <div id="menuMsg"></div>
+  </div>
+</div>
+
+<!-- In-game HUD -->
+<div id="hud">
+  <div id="crosshair"></div>
+  <div id="info">
+    <div class="code">World code <b id="codeVal"></b></div>
+    <div id="plist"></div>
+  </div>
+  <div id="chat">
+    <div id="log"></div>
+    <input id="chatInput" maxlength="200" placeholder="Say something… (Enter to send)" autocomplete="off">
+  </div>
+  <div id="hotbar"></div>
+</div>
+
+<!-- Pause screen -->
+<div id="overlay" class="screen hidden">
+  <div class="card" id="card">
+    <h1>Paused</h1>
+    <p>Share this code so friends can join.</p>
+    <div id="share">
+      <small>World code</small>
+      <div id="shareCode"></div>
+      <div class="row">
+        <button class="btn" id="copyCode">Copy code</button>
+        <button class="btn" id="copyLink">Copy invite link</button>
+      </div>
+    </div>
+    <dl>
+      <dt>W A S D</dt><dd>Move</dd>
+      <dt>Space</dt><dd>Jump</dd>
+      <dt>Shift</dt><dd>Run</dd>
+      <dt>Left click</dt><dd>Break block</dd>
+      <dt>Right click</dt><dd>Place block</dd>
+      <dt>1–8 / wheel</dt><dd>Choose colour</dd>
+      <dt>Enter / T</dt><dd>Chat</dd>
+      <dt>Esc</dt><dd>Pause</dd>
+    </dl>
+    <button class="btn primary" id="play">Click to play</button>
+    <button class="btn" id="leave">Leave world</button>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(() => {
+  // Index 0-7 are the hotbar colours, 8-9 are the platform checkerboard.
+  const PALETTE = [0xe63946, 0xf4a261, 0xffd166, 0x2a9d8f, 0x3a86ff, 0x8338ec, 0xf1f1f1, 0x2b2d42, 0x6b8f71, 0x7ea483];
+  const HOTBAR = 8;
+  const hex = (c) => "#" + c.toString(16).padStart(6, "0");
+  const $ = (id) => document.getElementById(id);
+
+  // ---------- Three.js setup ----------
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  const SKY = 0x8ecae6;
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(SKY);
+  scene.fog = new THREE.Fog(SKY, 40, 130);
+
+  const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.05, 300);
+  camera.rotation.order = "YXZ";
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x667788, 0.9));
+  const sun = new THREE.DirectionalLight(0xffffff, 0.6);
+  sun.position.set(0.5, 1, 0.3);
+  scene.add(sun);
+
+  window.addEventListener("resize", () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  // ---------- Blocks ----------
+  const blockGeo = new THREE.BoxGeometry(1, 1, 1);
+  const materials = {};
+  const matFor = (c) => (materials[c] ||= new THREE.MeshLambertMaterial({ color: PALETTE[c] }));
+
+  const world = new THREE.Group();
+  scene.add(world);
+  const blocks = new Map(); // "x,y,z" -> mesh
+  const key = (x, y, z) => `${x},${y},${z}`;
+
+  function addBlock(x, y, z, c) {
+    removeBlock(x, y, z);
+    const mesh = new THREE.Mesh(blockGeo, matFor(c));
+    mesh.position.set(x, y, z);
+    mesh.userData = { x, y, z };
+    world.add(mesh);
+    blocks.set(key(x, y, z), mesh);
+  }
+  function removeBlock(x, y, z) {
+    const k = key(x, y, z);
+    const mesh = blocks.get(k);
+    if (mesh) { world.remove(mesh); blocks.delete(k); }
+  }
+  function clearBlocks() {
+    for (const mesh of blocks.values()) world.remove(mesh);
+    blocks.clear();
+  }
+
+  const outline = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.BoxGeometry(1.01, 1.01, 1.01)),
+    new THREE.LineBasicMaterial({ color: 0x000000 })
+  );
+  outline.visible = false;
+  scene.add(outline);
+
+  // ---------- Other players + nametags ----------
+  const others = new Map(); // id -> { group, target, name, color }
+
+  function makeNameTag(name) {
+    const H = 56;
+    const c = document.createElement("canvas");
+    const ctx = c.getContext("2d");
+    const font = "bold 34px system-ui, sans-serif";
+    ctx.font = font;
+    const w = Math.ceil(ctx.measureText(name).width) + 28;
+    c.width = w; c.height = H; // resizing resets the context
+    ctx.font = font;
+    ctx.fillStyle = "rgba(18, 32, 43, 0.75)";
+    ctx.fillRect(0, 0, w, H);
+    ctx.fillStyle = "#fff";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(name, w / 2, H / 2 + 2);
+    const tex = new THREE.CanvasTexture(c);
+    tex.minFilter = THREE.LinearFilter;
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, fog: false }));
+    sprite.scale.set(0.3 * w / H, 0.3, 1);
+    sprite.position.y = 2.05;
+    sprite.renderOrder = 10;
+    return sprite;
+  }
+
+  function makeAvatar(color, name) {
+    const g = new THREE.Group();
+    const mat = new THREE.MeshLambertMaterial({ color });
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.6, 1.2, 0.4), mat);
+    body.position.y = 0.6;
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5), mat);
+    head.position.y = 1.45;
+    const face = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.12, 0.05), new THREE.MeshBasicMaterial({ color: 0x12202b }));
+    face.position.set(0, 1.5, -0.26); // front is -Z
+    g.add(body, head, face, makeNameTag(name));
+    return g;
+  }
+  function addPlayer(p) {
+    if (others.has(p.id)) return;
+    const group = makeAvatar(p.color, p.name);
+    group.position.set(p.x, p.y, p.z);
+    group.rotation.y = p.ry;
+    scene.add(group);
+    others.set(p.id, { group, name: p.name, color: p.color, target: { x: p.x, y: p.y, z: p.z, ry: p.ry } });
+    renderPlayers();
+  }
+  function removePlayer(id) {
+    const o = others.get(id);
+    if (o) { scene.remove(o.group); others.delete(id); renderPlayers(); }
+  }
+  function clearPlayers() {
+    for (const o of others.values()) scene.remove(o.group);
+    others.clear();
+  }
+
+  // ---------- HUD ----------
+  let myId = 0, myName = "", myColor = 0xffffff, roomCode = "";
+  const plist = $("plist");
+
+  function renderPlayers() {
+    plist.textContent = "";
+    const add = (name, color, me) => {
+      const row = document.createElement("div");
+      const dot = document.createElement("i");
+      dot.style.background = hex(color);
+      row.append(dot, name + (me ? " (you)" : ""));
+      plist.append(row);
+    };
+    add(myName, myColor, true);
+    for (const o of others.values()) add(o.name, o.color, false);
+  }
+
+  let selected = 0;
+  const hotbarEl = $("hotbar");
+  const slots = [];
+  for (let i = 0; i < HOTBAR; i++) {
+    const s = document.createElement("div");
+    s.className = "slot";
+    s.style.background = hex(PALETTE[i]);
+    s.innerHTML = `<span>${i + 1}</span>`;
+    hotbarEl.appendChild(s);
+    slots.push(s);
+  }
+  function select(i) {
+    selected = (i + HOTBAR) % HOTBAR;
+    slots.forEach((s, n) => s.classList.toggle("on", n === selected));
+  }
+  select(0);
+
+  // ---------- Chat ----------
+  const chatEl = $("chat"), logEl = $("log"), chatInput = $("chatInput");
+  let chatOpen = false;
+
+  function addChat(text, opts = {}) {
+    const div = document.createElement("div");
+    div.className = "msg" + (opts.sys ? " sys" : "");
+    if (opts.name) {
+      const b = document.createElement("b");
+      b.textContent = opts.name;
+      b.style.color = hex(opts.color);
+      div.append(b);
+    }
+    div.append(document.createTextNode(text)); // textContent-safe: no HTML injection
+    logEl.append(div);
+    while (logEl.children.length > 40) logEl.firstChild.remove();
+    setTimeout(() => div.classList.add("old"), 9000);
+  }
+
+  function openChat() {
+    chatOpen = true;
+    for (const k in keys) keys[k] = false;
+    chatEl.classList.add("open");
+    document.exitPointerLock();
+    chatInput.value = "";
+    chatInput.focus();
+    updateOverlay();
+  }
+  function closeChat() {
+    chatOpen = false;
+    chatEl.classList.remove("open");
+    chatInput.blur();
+    if (inGame) canvas.requestPointerLock();
+    setTimeout(updateOverlay, 150); // show the pause screen if the lock was refused
+  }
+  chatInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      const text = chatInput.value.trim();
+      if (text) send({ type: "chat", text });
+      closeChat();
+    } else if (e.key === "Escape") {
+      closeChat();
+    }
+  });
+
+  // ---------- Networking / menu ----------
+  let ws = null, inGame = false;
+  const menuMsg = $("menuMsg");
+  const nameInput = $("name"), codeInput = $("code");
+  const menuBtns = [$("host"), $("join")];
+
+  function setMenuMsg(text, isErr) {
+    menuMsg.textContent = text || "";
+    menuMsg.classList.toggle("err", !!isErr);
+  }
+  function setBusy(b) { menuBtns.forEach((btn) => (btn.disabled = b)); }
+  function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+
+  try { nameInput.value = localStorage.getItem("bp-name") || ""; } catch {}
+  const urlCode = new URLSearchParams(location.search).get("code");
+  if (urlCode) codeInput.value = urlCode.toUpperCase().slice(0, 5);
+
+  function start(first) {
+    if (ws) return;
+    const name = nameInput.value.trim();
+    try { localStorage.setItem("bp-name", name); } catch {}
+    setBusy(true);
+    setMenuMsg("Connecting… the first visit can take up to a minute while the server wakes up.");
+
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const sock = new WebSocket(`${proto}://${location.host}`);
+    ws = sock;
+    sock.onopen = () => send({ ...first, name });
+    sock.onclose = () => {
+      if (ws !== sock) return;
+      ws = null;
+      setBusy(false);
+      if (inGame) leaveToMenu("Disconnected from the server.", true);
+      else setMenuMsg("Couldn't connect to the server. Try again.", true);
+    };
+    sock.onmessage = (e) => handle(JSON.parse(e.data), sock);
+  }
+
+  function handle(msg, sock) {
+    switch (msg.type) {
+      case "error":
+        ws = null; sock.close();
+        setBusy(false);
+        setMenuMsg(msg.message, true);
+        break;
+      case "init":
+        clearBlocks(); clearPlayers(); logEl.textContent = "";
+        myId = msg.id; myName = msg.name; myColor = msg.color; roomCode = msg.code;
+        for (const [x, y, z, c] of msg.blocks) addBlock(x, y, z, c);
+        for (const p of msg.players) addPlayer(p);
+        $("codeVal").textContent = $("shareCode").textContent = roomCode;
+        renderPlayers();
+        respawn();
+        inGame = true;
+        setBusy(false);
+        setMenuMsg("");
+        document.body.classList.add("ingame");
+        addChat(`Welcome, ${myName}! Share code ${roomCode} with friends.`, { sys: true });
+        updateOverlay();
+        break;
+      case "join":
+        addPlayer(msg.player);
+        addChat(`${msg.player.name} joined`, { sys: true });
+        break;
+      case "leave": {
+        const o = others.get(msg.id);
+        if (o) addChat(`${o.name} left`, { sys: true });
+        removePlayer(msg.id);
+        break;
+      }
+      case "move": {
+        const o = others.get(msg.id);
+        if (o) o.target = { x: msg.x, y: msg.y, z: msg.z, ry: msg.ry };
+        break;
+      }
+      case "set": addBlock(msg.x, msg.y, msg.z, msg.c); break;
+      case "del": removeBlock(msg.x, msg.y, msg.z); break;
+      case "chat": addChat(msg.text, { name: msg.name, color: msg.color }); break;
+    }
+  }
+
+  function leaveToMenu(message, isErr) {
+    inGame = false;
+    chatOpen = false;
+    chatEl.classList.remove("open");
+    if (ws) { const s = ws; ws = null; s.close(); }
+    document.exitPointerLock();
+    clearBlocks(); clearPlayers();
+    outline.visible = false;
+    document.body.classList.remove("ingame");
+    setBusy(false);
+    setMenuMsg(message || "", isErr);
+    updateOverlay();
+  }
+
+  $("host").addEventListener("click", () => start({ type: "host" }));
+  $("join").addEventListener("click", () => {
+    const code = codeInput.value.trim().toUpperCase();
+    if (code.length !== 5) return setMenuMsg("Enter the 5-character world code.", true);
+    start({ type: "join", code });
+  });
+  codeInput.addEventListener("keydown", (e) => { if (e.key === "Enter") $("join").click(); });
+  nameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") (codeInput.value ? $("join") : $("host")).click(); });
+
+  // Pause-screen buttons (stopPropagation so they don't trigger "click to play")
+  function flash(btn, text) {
+    const old = btn.textContent;
+    btn.textContent = text;
+    setTimeout(() => (btn.textContent = old), 1200);
+  }
+  function copy(text, btn) {
+    const done = () => flash(btn, "Copied!");
+    if (navigator.clipboard) navigator.clipboard.writeText(text).then(done, () => flash(btn, "Copy failed"));
+    else flash(btn, "Copy failed");
+  }
+  $("copyCode").addEventListener("click", (e) => { e.stopPropagation(); copy(roomCode, e.currentTarget); });
+  $("copyLink").addEventListener("click", (e) => { e.stopPropagation(); copy(`${location.origin}/?code=${roomCode}`, e.currentTarget); });
+  $("leave").addEventListener("click", (e) => { e.stopPropagation(); leaveToMenu(); });
+
+  // ---------- Player physics ----------
+  const R = 0.3, H = 1.8, EYE = 1.6, EPS = 0.001;
+  const pos = new THREE.Vector3(0, 3, 0);
+  let vy = 0, onGround = false, yaw = 0, pitch = 0;
+
+  function respawn() {
+    pos.set((Math.random() - 0.5) * 6, 3, (Math.random() - 0.5) * 6);
+    vy = 0;
+  }
+
+  function collides(x, y, z) {
+    const x0 = Math.floor(x - R + 0.5 + EPS), x1 = Math.floor(x + R + 0.5 - EPS);
+    const y0 = Math.floor(y + 0.5 + EPS),     y1 = Math.floor(y + H + 0.5 - EPS);
+    const z0 = Math.floor(z - R + 0.5 + EPS), z1 = Math.floor(z + R + 0.5 - EPS);
+    for (let bx = x0; bx <= x1; bx++)
+      for (let by = y0; by <= y1; by++)
+        for (let bz = z0; bz <= z1; bz++)
+          if (blocks.has(key(bx, by, bz))) return true;
+    return false;
+  }
+
+  const keys = {};
+  function step(dt) {
+    const fwd = (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0);
+    const strafe = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0);
+    let dx = -Math.sin(yaw) * fwd + Math.cos(yaw) * strafe;
+    let dz = -Math.cos(yaw) * fwd - Math.sin(yaw) * strafe;
+    const len = Math.hypot(dx, dz);
+    const speed = keys.ShiftLeft || keys.ShiftRight ? 8 : 5;
+    if (len > 0) { dx = (dx / len) * speed * dt; dz = (dz / len) * speed * dt; }
+
+    pos.x += dx; if (collides(pos.x, pos.y, pos.z)) pos.x -= dx;
+    pos.z += dz; if (collides(pos.x, pos.y, pos.z)) pos.z -= dz;
+
+    if (keys.Space && onGround) { vy = 8.5; }
+    vy = Math.max(vy - 25 * dt, -30);
+    onGround = false;
+    pos.y += vy * dt;
+    if (collides(pos.x, pos.y, pos.z)) {
+      if (vy < 0) {
+        pos.y = Math.floor(pos.y + 0.5) + 0.5 + EPS * 2;
+        onGround = true;
+      } else {
+        pos.y = Math.floor(pos.y + H + 0.5) - 0.5 - H - EPS * 2;
+      }
+      vy = 0;
+    }
+    if (pos.y < -30) respawn();
+  }
+
+  function physics(dt) {
+    dt = Math.min(dt, 0.05);
+    const n = Math.ceil(dt / 0.016);
+    for (let i = 0; i < n; i++) step(dt / n);
+  }
+
+  // ---------- Input ----------
+  const overlay = $("overlay");
+  const canvas = renderer.domElement;
+  const locked = () => document.pointerLockElement === canvas;
+
+  function updateOverlay() {
+    overlay.classList.toggle("hidden", !inGame || locked() || chatOpen);
+  }
+
+  overlay.addEventListener("click", () => canvas.requestPointerLock());
+  document.addEventListener("pointerlockchange", () => {
+    updateOverlay();
+    if (!locked()) for (const k in keys) keys[k] = false;
+  });
+  document.addEventListener("pointerlockerror", updateOverlay);
+
+  document.addEventListener("keydown", (e) => {
+    if (e.target.tagName === "INPUT") return; // typing in a text box
+    if (inGame && locked() && (e.code === "Enter" || e.code === "KeyT")) {
+      e.preventDefault();
+      openChat();
+      return;
+    }
+    keys[e.code] = true;
+    if (e.code === "Space") e.preventDefault();
+    if (/^Digit[1-8]$/.test(e.code)) select(Number(e.code.slice(5)) - 1);
+  });
+  document.addEventListener("keyup", (e) => { keys[e.code] = false; });
+
+  document.addEventListener("mousemove", (e) => {
+    if (!locked()) return;
+    yaw -= e.movementX * 0.0022;
+    pitch = Math.max(-1.55, Math.min(1.55, pitch - e.movementY * 0.0022));
+  });
+  document.addEventListener("wheel", (e) => {
+    if (locked()) select(selected + (e.deltaY > 0 ? 1 : -1));
+  });
+  document.addEventListener("contextmenu", (e) => e.preventDefault());
+
+  // ---------- Aiming / place / break ----------
+  const raycaster = new THREE.Raycaster();
+  raycaster.far = 8;
+  const center = new THREE.Vector2(0, 0);
+  let hit = null;
+
+  function aim() {
+    raycaster.setFromCamera(center, camera);
+    const hits = raycaster.intersectObjects(world.children, false);
+    hit = hits.length ? hits[0] : null;
+    if (hit) {
+      outline.position.copy(hit.object.position);
+      outline.visible = true;
+    } else {
+      outline.visible = false;
+    }
+  }
+
+  function overlapsPlayer(x, y, z) {
+    return Math.abs(pos.x - x) < 0.5 + R && Math.abs(pos.z - z) < 0.5 + R &&
+           pos.y < y + 0.5 && pos.y + H > y - 0.5;
+  }
+
+  document.addEventListener("mousedown", (e) => {
+    if (!locked() || !hit) return;
+    const { x, y, z } = hit.object.userData;
+    if (e.button === 0) {
+      send({ type: "break", x, y, z });
+    } else if (e.button === 2) {
+      const n = hit.face.normal;
+      const px = x + Math.round(n.x), py = y + Math.round(n.y), pz = z + Math.round(n.z);
+      if (!overlapsPlayer(px, py, pz)) send({ type: "place", x: px, y: py, z: pz, c: selected });
+    }
+  });
+
+  // ---------- Main loop ----------
+  let last = performance.now();
+  let sendTimer = 0;
+
+  function loop(now) {
+    requestAnimationFrame(loop);
+    const dt = (now - last) / 1000;
+    last = now;
+
+    if (inGame) physics(dt);
+
+    camera.position.set(pos.x, pos.y + EYE, pos.z);
+    camera.rotation.set(pitch, yaw, 0);
+    if (inGame && locked()) aim();
+
+    const k = Math.min(1, dt * 12);
+    for (const o of others.values()) {
+      const g = o.group, t = o.target;
+      g.position.x += (t.x - g.position.x) * k;
+      g.position.y += (t.y - g.position.y) * k;
+      g.position.z += (t.z - g.position.z) * k;
+      let d = t.ry - g.rotation.y;
+      d = Math.atan2(Math.sin(d), Math.cos(d));
+      g.rotation.y += d * k;
+    }
+
+    sendTimer += dt;
+    if (sendTimer >= 0.05) { // 20 updates per second
+      sendTimer = 0;
+      if (inGame) send({ type: "move", x: pos.x, y: pos.y, z: pos.z, ry: yaw });
+    }
+
+    renderer.render(scene, camera);
+  }
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
