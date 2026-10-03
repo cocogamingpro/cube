@@ -1,0 +1,226 @@
+const express = require("express");
+const http = require("http");
+const path = require("path");
+const { WebSocketServer } = require("ws");
+
+const PORT = process.env.PORT || 3000;
+
+// ---------- World config ----------
+const PLATFORM_RADIUS = 12; // platform spans -12..12 on x and z (25x25)
+const PALETTE_SIZE = 10; // must match the client palette length
+const MAX_BLOCKS = 20000;
+const BOUNDS = { x: 60, z: 60, yMin: 0, yMax: 40 };
+
+// Blocks live in memory: "x,y,z" -> colour index.
+// (The world resets whenever the server restarts.)
+const blocks = new Map();
+const key = (x, y, z) => `${x},${y},${z}`;
+
+for (let x = -PLATFORM_RADIUS; x <= PLATFORM_RADIUS; x++) {
+  for (let z = -PLATFORM_RADIUS; z <= PLATFORM_RADIUS; z++) {
+    blocks.set(key(x, 0, z), (x + z) % 2 === 0 ? 8 : 9); // checkerboard
+  }
+}
+
+// ---------- HTTP ----------
+const app = express();
+app.use(express.static(path.join(__dirname, "public")));
+app.get("/health", (_req, res) => res.send("ok"));
+
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server });
+
+// ---------- Players ----------
+const players = new Map(); // id -> { id, x, y, z, ry, color }
+let nextId = 1;
+
+const randomColor = () => {
+  const hue = Math.floor(Math.random() * 360);
+  // HSL -> hex int (saturation 65%, lightness 55%)
+  const s = 0.65, l = 0.55;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => {
+    const k = (n + hue / 30) % 12;
+    return l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+  };
+  const to255 = (v) => Math.round(v * 255);
+  return (to255(f(0)) << 16) | (to255(f(8)) << 8) | to255(f(4));
+};
+
+const send = (ws, obj) => {
+  if (ws.readyState === 1) ws.send(JSON.stringify(obj));
+};
+const broadcast = (obj, except) => {
+  const data = JSON.stringify(obj);
+  for (const client of wss.clients) {
+    if (client !== except && client.readyState === 1) client.send(data);
+  }
+};
+
+const sockets = new Map(); // player id -> ws
+const pendingNades = new Map(); // grenade id -> owner player id
+let nextNade = 1;
+const MAX_HP = 100;
+const BLAST_RADIUS = 3; // blocks
+const BLAST_RANGE = 5; // player damage radius
+
+function damage(victim, amount) {
+  victim.hp -= amount;
+  const ws = sockets.get(victim.id);
+  if (victim.hp <= 0) {
+    victim.hp = MAX_HP;
+    if (ws) send(ws, { type: "respawn" });
+  }
+  if (ws) send(ws, { type: "hp", hp: victim.hp });
+}
+
+// Destroys blocks in a sphere (the y=0 floor survives) and hurts nearby players.
+function explode(x, y, z) {
+  const removed = [];
+  const cx = Math.round(x), cy = Math.round(y), cz = Math.round(z);
+  const r = BLAST_RADIUS;
+  for (let dx = -r; dx <= r; dx++)
+    for (let dy = -r; dy <= r; dy++)
+      for (let dz = -r; dz <= r; dz++) {
+        if (dx * dx + dy * dy + dz * dz > r * r + 1) continue;
+        const bx = cx + dx, by = cy + dy, bz = cz + dz;
+        if (by < 1) continue;
+        if (blocks.delete(key(bx, by, bz))) removed.push([bx, by, bz]);
+      }
+  for (const p of players.values()) {
+    const d = Math.hypot(p.x - x, p.y + 0.9 - y, p.z - z);
+    if (d < BLAST_RANGE) damage(p, Math.round(70 * (1 - d / BLAST_RANGE)) + 5);
+  }
+  return removed;
+}
+
+const isInt = (n) => Number.isInteger(n);
+const validBlockPos = (x, y, z) =>
+  isInt(x) && isInt(y) && isInt(z) &&
+  Math.abs(x) <= BOUNDS.x && Math.abs(z) <= BOUNDS.z &&
+  y >= BOUNDS.yMin && y <= BOUNDS.yMax;
+
+wss.on("connection", (ws) => {
+  const id = nextId++;
+  const player = { id, x: 0, y: 2, z: 0, ry: 0, color: randomColor(), hp: MAX_HP };
+  players.set(id, player);
+  ws.playerId = id;
+  sockets.set(id, ws);
+  ws.isAlive = true;
+  ws.msgCount = 0;
+
+  // Send the full world + everyone currently online to the new player.
+  const blockList = [];
+  for (const [k, c] of blocks) {
+    const [x, y, z] = k.split(",").map(Number);
+    blockList.push([x, y, z, c]);
+  }
+  send(ws, {
+    type: "init",
+    id,
+    color: player.color,
+    blocks: blockList,
+    players: [...players.values()].filter((p) => p.id !== id),
+  });
+  broadcast({ type: "join", player }, ws);
+
+  ws.on("pong", () => (ws.isAlive = true));
+
+  ws.on("message", (raw) => {
+    // Very small flood protection.
+    if (++ws.msgCount > 400) return;
+
+    let msg;
+    try {
+      msg = JSON.parse(raw);
+    } catch {
+      return;
+    }
+
+    switch (msg.type) {
+      case "move": {
+        const { x, y, z, ry } = msg;
+        if (![x, y, z, ry].every(Number.isFinite)) return;
+        Object.assign(player, { x, y, z, ry });
+        broadcast({ type: "move", id, x, y, z, ry }, ws);
+        break;
+      }
+      case "shoot": {
+        const { ox, oy, oz, tx, ty, tz, hit } = msg;
+        if (![ox, oy, oz, tx, ty, tz].every(Number.isFinite)) return;
+        const t = Date.now();
+        if (t - (ws.lastShot || 0) < 150) return;
+        ws.lastShot = t;
+        broadcast({ type: "shot", ox, oy, oz, tx, ty, tz }, ws);
+        const victim = players.get(hit);
+        if (victim && victim !== player) damage(victim, 25);
+        break;
+      }
+      case "throw": {
+        const { x, y, z, vx, vy, vz } = msg;
+        if (![x, y, z, vx, vy, vz].every(Number.isFinite)) return;
+        if (Math.hypot(vx, vy, vz) > 40) return;
+        const t = Date.now();
+        if (t - (ws.lastThrow || 0) < 800) return;
+        if ([...pendingNades.values()].filter((o) => o === id).length >= 3) return;
+        ws.lastThrow = t;
+        const nid = nextNade++;
+        pendingNades.set(nid, id);
+        broadcast({ type: "nade", nid, id, x, y, z, vx, vy, vz });
+        break;
+      }
+      case "explode": {
+        // The thrower's client simulates the bounce and reports where it landed.
+        const { nid, x, y, z } = msg;
+        if (pendingNades.get(nid) !== id) return;
+        if (![x, y, z].every(Number.isFinite) || Math.abs(x) > 200 || Math.abs(z) > 200 || y < -50 || y > 100) return;
+        pendingNades.delete(nid);
+        const del = explode(x, y, z);
+        broadcast({ type: "boom", nid, x, y, z, del });
+        break;
+      }
+      case "place": {
+        const { x, y, z, c } = msg;
+        if (!validBlockPos(x, y, z)) return;
+        if (!isInt(c) || c < 0 || c >= PALETTE_SIZE) return;
+        if (blocks.has(key(x, y, z)) || blocks.size >= MAX_BLOCKS) return;
+        blocks.set(key(x, y, z), c);
+        broadcast({ type: "set", x, y, z, c });
+        break;
+      }
+      case "break": {
+        const { x, y, z } = msg;
+        if (!validBlockPos(x, y, z)) return;
+        if (!blocks.delete(key(x, y, z))) return;
+        broadcast({ type: "del", x, y, z });
+        break;
+      }
+    }
+  });
+
+  ws.on("close", () => {
+    players.delete(id);
+    sockets.delete(id);
+    for (const [nid, owner] of pendingNades) if (owner === id) pendingNades.delete(nid);
+    broadcast({ type: "leave", id });
+  });
+});
+
+// Reset flood counters every second.
+setInterval(() => {
+  for (const ws of wss.clients) ws.msgCount = 0;
+}, 1000);
+
+// Heartbeat: drop dead connections and keep proxies from idling the socket.
+setInterval(() => {
+  for (const ws of wss.clients) {
+    if (!ws.isAlive) {
+      ws.terminate();
+      continue;
+    }
+    ws.isAlive = false;
+    ws.ping();
+  }
+}, 30000);
+
+server.listen(PORT, () => console.log(`Block Platform running on port ${PORT}`));
